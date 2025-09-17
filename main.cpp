@@ -3,7 +3,6 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#include <map>
 #include <algorithm>
 #include <limits>
 #include <cmath>
@@ -163,6 +162,7 @@ public:
         }
     }
 };
+
 
 
 // Escalonador de Loteria
