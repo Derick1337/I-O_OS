@@ -11,6 +11,13 @@
 #include <ctime>
 #include <iomanip>
 
+struct DeviceInfo
+{
+    std::string name;
+    int priority;
+    int access_time;
+};
+
 struct ProcessInfo
 {
     int creation_time;
@@ -19,6 +26,7 @@ struct ProcessInfo
     int priority;
     int memory_needed;
     std::vector<int> page_sequence;
+    int io_operations; // Novo campo para operações de I/O
 };
 
 struct Config
@@ -29,9 +37,10 @@ struct Config
     int memory_size;
     int page_size;
     double allocation_percentage;
+    int num_devices; // Novo campo para número de dispositivos
 };
 
-bool read_file(const std::string &filename, Config &config, std::vector<ProcessInfo> &processes)
+bool read_file(const std::string &filename, Config &config, std::vector<DeviceInfo> &devices, std::vector<ProcessInfo> &processes)
 {
     std::ifstream file(filename);
     if (!file.is_open())
@@ -41,15 +50,19 @@ bool read_file(const std::string &filename, Config &config, std::vector<ProcessI
     }
 
     std::string line;
-    bool first_line = true;
+    int line_count = 0;
+    int devices_read = 0;
 
     while (std::getline(file, line))
     {
         if (line.empty())
             continue;
 
-        if (first_line)
+        line_count++;
+
+        if (line_count == 1)
         {
+            // Primeira linha: configuração
             std::stringstream ss(line);
             std::string token;
             std::getline(ss, config.scheduling_algorithm, '|');
@@ -60,12 +73,28 @@ bool read_file(const std::string &filename, Config &config, std::vector<ProcessI
             config.memory_size = std::stoi(token);
             std::getline(ss, token, '|');
             config.page_size = std::stoi(token);
-            std::getline(ss, token);
+            std::getline(ss, token, '|');
             config.allocation_percentage = std::stod(token);
-            first_line = false;
+            std::getline(ss, token);
+            config.num_devices = std::stoi(token);
+        }
+        else if (devices_read < config.num_devices)
+        {
+            // Linhas de dispositivos
+            DeviceInfo device;
+            std::stringstream ss(line);
+            std::string token;
+            std::getline(ss, device.name, '|');
+            std::getline(ss, token, '|');
+            device.priority = std::stoi(token);
+            std::getline(ss, token);
+            device.access_time = std::stoi(token);
+            devices.push_back(device);
+            devices_read++;
         }
         else
         {
+            // Linhas de processos
             ProcessInfo process;
             std::stringstream ss(line);
             std::string token;
@@ -79,14 +108,18 @@ bool read_file(const std::string &filename, Config &config, std::vector<ProcessI
             process.priority = std::stoi(token);
             std::getline(ss, token, '|');
             process.memory_needed = std::stoi(token);
+            std::getline(ss, token, '|');
+            // Sequência de páginas
+            std::stringstream pages_ss(token);
+            std::string page_str;
+            while (pages_ss >> page_str)
+            {
+                process.page_sequence.push_back(std::stoi(page_str));
+            }
+            // Último campo: operações de I/O
             if (std::getline(ss, token))
             {
-                std::stringstream pages_ss(token);
-                std::string page_str;
-                while (pages_ss >> page_str)
-                {
-                    process.page_sequence.push_back(std::stoi(page_str));
-                }
+                process.io_operations = std::stoi(token);
             }
             processes.push_back(process);
         }
@@ -163,7 +196,6 @@ public:
         }
     }
 };
-
 
 // Escalonador de Loteria
 
@@ -331,177 +363,4 @@ void LotteryScheduler::run()
 
 int main(int argc, char *argv[])
 {
-    if (argc < 2)
-    {
-        std::cerr << "Uso: " << argv[0] << " <arquivo_de_entrada>" << std::endl;
-        return 1;
-    }
-    std::string filename = argv[1];
-
-    Config config;
-    std::vector<ProcessInfo> processes;
-
-    if (!read_file(filename, config, processes))
-    {
-        return 1;
-    }
-
-    std::string algorithm_name_lower = config.scheduling_algorithm;
-    for (size_t i = 0; i < algorithm_name_lower.length(); ++i)
-    {
-        algorithm_name_lower[i] = tolower(algorithm_name_lower[i]);
-    }
-
-    if (algorithm_name_lower == "loteria")
-    {
-        LotteryScheduler scheduler;
-        scheduler.set_quantum(config.cpu_fraction);
-        for (size_t i = 0; i < processes.size(); ++i)
-        {
-            Process p(processes[i].pid, processes[i].creation_time, processes[i].execution_time, processes[i].priority);
-            scheduler.add_process(p);
-        }
-        scheduler.run();
-    }
-
-    std::string memory_policy_lower = config.memory_policy;
-    for (char &c : memory_policy_lower)
-        c = tolower(c);
-    bool is_local = (memory_policy_lower == "local");
-
-    int total_fifo_replacements = 0;
-    int total_mru_replacements = 0;
-    int total_nuf_replacements = 0;
-    int total_optimal_replacements = 0;
-
-    std::cout << "--- Simulacao de Gerenciamento de Memoria ---\n";
-
-    if (is_local) // Política é LOCAL
-    {
-        for (size_t i = 0; i < processes.size(); ++i)
-        {
-            const ProcessInfo &process = processes[i];
-            if (process.page_sequence.empty() || config.page_size == 0)
-                continue;
-
-            int process_virtual_pages = (int)ceil((double)process.memory_needed / config.page_size);
-            int num_frames = floor(process_virtual_pages * (config.allocation_percentage / 100.0));
-            if (num_frames == 0)
-                num_frames = 1;
-
-            std::cout << "\n--- Processo PID: " << process.pid << " (com " << num_frames << " quadros) ---\n";
-
-            FIFO fifo(num_frames);
-            fifo.execute(process.page_sequence);
-            int fifo_reps = fifo.get_page_replacements();
-            total_fifo_replacements += fifo_reps;
-            std::cout << "-> FIFO: " << fifo_reps << " trocas de pagina.\n";
-
-            MRU mru(num_frames);
-            mru.execute(process.page_sequence);
-            int mru_reps = mru.get_page_replacements();
-            total_mru_replacements += mru_reps;
-            std::cout << "-> MRU: " << mru_reps << " trocas de pagina.\n";
-
-            NUF nuf(num_frames);
-            nuf.execute(process.page_sequence);
-            int nuf_reps = nuf.get_page_replacements();
-            total_nuf_replacements += nuf_reps;
-            std::cout << "-> NUF: " << nuf_reps << " trocas de pagina.\n";
-
-            Otimo optimal(num_frames);
-            optimal.execute(process.page_sequence);
-            int opt_reps = optimal.get_page_replacements();
-            total_optimal_replacements += opt_reps;
-            std::cout << "-> Otimo: " << opt_reps << " trocas de pagina.\n";
-        }
-    }
-    else // Política é GLOBAL
-    {
-        std::vector<int> combined_sequence;
-        for (const auto &proc : processes)
-        {
-            for (int page : proc.page_sequence)
-            {
-                combined_sequence.push_back(proc.pid * 10000 + page);
-            }
-        }
-
-        int total_frames = config.memory_size / config.page_size;
-        if (total_frames == 0)
-            total_frames = 1;
-
-        std::cout << "\n--- Politica GLOBAL com " << total_frames << " molduras totais ---\n";
-
-        FIFO fifo(total_frames);
-        fifo.execute(combined_sequence);
-        total_fifo_replacements = fifo.get_page_replacements();
-        std::cout << "-> FIFO: " << total_fifo_replacements << " trocas de pagina.\n";
-
-        MRU mru(total_frames);
-        mru.execute(combined_sequence);
-        total_mru_replacements = mru.get_page_replacements();
-        std::cout << "-> MRU: " << total_mru_replacements << " trocas de pagina.\n";
-
-        NUF nuf(total_frames);
-        nuf.execute(combined_sequence);
-        total_nuf_replacements = nuf.get_page_replacements();
-        std::cout << "-> NUF: " << total_nuf_replacements << " trocas de pagina.\n";
-
-        Otimo optimal(total_frames);
-        optimal.execute(combined_sequence);
-        total_optimal_replacements = optimal.get_page_replacements();
-        std::cout << "-> Otimo: " << total_optimal_replacements << " trocas de pagina.\n";
-    }
-
-    std::string best_algorithm = "empate";
-    int min_diff = std::numeric_limits<int>::max();
-    bool tie = false;
-
-    int diff_fifo = abs(total_fifo_replacements - total_optimal_replacements);
-    if (diff_fifo < min_diff)
-    {
-        min_diff = diff_fifo;
-        best_algorithm = "FIFO";
-        tie = false;
-    }
-
-    int diff_mru = abs(total_mru_replacements - total_optimal_replacements);
-    if (diff_mru < min_diff)
-    {
-        min_diff = diff_mru;
-        best_algorithm = "MRU (Menos Recentemente Usada)";
-        tie = false;
-    }
-    else if (diff_mru == min_diff)
-    {
-        tie = true;
-    }
-
-    int diff_nuf = abs(total_nuf_replacements - total_optimal_replacements);
-    if (diff_nuf < min_diff)
-    {
-        min_diff = diff_nuf;
-        best_algorithm = "NUF (Não Usada Frequentemente)";
-        tie = false;
-    }
-    else if (diff_nuf == min_diff)
-    {
-        tie = true;
-    }
-
-    if (tie)
-        best_algorithm = "empate";
-
-    std::cout << "\n\n=======================================================";
-    std::cout << "\n--- Resultado Final do Gerenciamento de Memoria ---\n";
-    std::cout << "=======================================================\n";
-    std::cout << total_fifo_replacements << "|"
-              << total_mru_replacements << "|"
-              << total_nuf_replacements << "|"
-              << total_optimal_replacements << "|"
-              << best_algorithm << std::endl;
-    std::cout << "=======================================================\n";
-
-    return 0;
 }
