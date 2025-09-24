@@ -1,507 +1,706 @@
+/**
+ * @file simulador_so.cpp
+ * @brief Implementação de um simulador de sistema operacional em C++.
+ *
+ * Este simulador modela um escalonador de processos com o algoritmo de Sorteio (Lottery)
+ * e um subsistema de gerenciamento de dispositivos de Entrada e Saída (E/S).
+ * Ele lê uma configuração de um arquivo, simula a execução de processos
+ * e, ao final, apresenta métricas de desempenho detalhadas.
+ *
+ * FUNCIONALIDADES PRINCIPAIS:
+ * - Escalonamento de processos usando algoritmo de Sorteio (Lottery Scheduling)
+ * - Gerenciamento de dispositivos de E/S com limites de uso simultâneo
+ * - Filas de espera para dispositivos ocupados
+ * - Simulação probabilística de solicitações de E/S durante execução
+ * - Relatórios detalhados de desempenho (tempo de retorno, CPU, espera)
+ *
+ * FLUXO GERAL DO SISTEMA:
+ * 1. Leitura do arquivo de configuração (processos, dispositivos, parâmetros)
+ * 2. Inicialização das estruturas de dados (filas, dispositivos)
+ * 3. Loop principal da simulação:
+ *    a. Verificação de chegada de novos processos
+ *    b. Verificação de conclusão de operações de E/S
+ *    c. Gerenciamento de filas de espera dos dispositivos
+ *    d. Seleção e execução de processos na CPU
+ *    e. Tratamento de solicitações de E/S
+ *    f. Avanço do tempo da simulação
+ * 4. Geração de relatório final com métricas de desempenho
+ *
+ * @author Seu Nome/Grupo Aqui
+ * @date 24/09/2025
+ */
+
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
 #include <algorithm>
-#include <limits>
-#include <cmath>
 #include <cstdlib>
 #include <ctime>
 #include <iomanip>
+#include <list>
+#include <cmath>
 
-struct ProcessInfo
-{
-    int creation_time;
+// =====================================================================================
+// DEFINIÇÕES E ESTRUTURAS BÁSICAS
+// =====================================================================================
+
+// Enum para os estados do processo
+enum ProcessState {
+    PRONTO,      // Processo pronto para executar
+    EXECUTANDO,  // Processo atualmente na CPU
+    BLOQUEADO,   // Processo aguardando E/S
+    TERMINADO    // Processo finalizado
+};
+
+// Forward declaration para a classe Process
+class Process;
+
+// Estrutura para representar um dispositivo de E/S
+struct DeviceInfo {
+    int id;                           // Identificador único do dispositivo
+    int numUsosSimultaneos;          // Número máximo de processos simultâneos
+    int tempoOperacao;               // Tempo que o dispositivo leva para processar uma operação
+    std::list<Process*> usuarios_ativos;    // Processos atualmente usando o dispositivo
+    std::list<Process*> fila_de_espera;     // Processos aguardando para usar o dispositivo
+};
+
+// Estrutura de configuração global da simulação
+struct Config {
+    std::string scheduling_algorithm; // Algoritmo de escalonamento (ex: "sorteio")
+    int cpu_fraction;                // Quantum de tempo da CPU
+    int numDispositivosES;           // Número total de dispositivos de E/S
+};
+
+// =====================================================================================
+// ESTRUTURAS DE DADOS PRINCIPAIS
+// =====================================================================================
+
+// =====================================================================================
+// ESTRUTURAS DE DADOS PRINCIPAIS
+// =====================================================================================
+
+/**
+ * @class Process
+ * @brief Representa um processo no sistema operacional.
+ *
+ * Esta classe modela um processo com todas as suas características:
+ * - Identificação (PID)
+ * - Tempos de execução e criação
+ * - Estado atual (Pronto, Executando, Bloqueado, Terminado)
+ * - Recursos necessários (bilhetes para sorteio, chance de E/S)
+ * - Métricas de desempenho coletadas durante a execução
+ */
+class Process {
+public:
+    // Atributos lidos do arquivo
     int pid;
-    int execution_time;
-    int priority;
-    int memory_needed;
-    std::vector<int> page_sequence;
+    int creation_time;
+    int burst_time;
+    int tickets; // Usado como prioridade no Sorteio
+    double chanceRequisitarES;
+
+    // Atributos dinâmicos da simulação
+    int remaining_time;
+    ProcessState state;
+    int device_id_blocked = -1;
+    int io_completion_time = -1;
+
+    // Métricas de desempenho
+    int start_time = -1;
+    int end_time = -1;
+    int time_in_ready = 0;
+    int time_in_blocked = 0;
+
+    Process(int p, int ct, int bt, int t, double chance_es)
+        : pid(p), creation_time(ct), burst_time(bt), tickets(t), chanceRequisitarES(chance_es) {
+        remaining_time = burst_time;
+        state = PRONTO; // Estado inicial conceitual
+    }
+
+    // Função para obter a string correspondente ao estado
+    std::string getStateString() const {
+        switch (state) {
+            case PRONTO: return "Pronto";
+            case EXECUTANDO: return "Executando";
+            case BLOQUEADO: return "Bloqueado";
+            case TERMINADO: return "Terminado";
+            default: return "Desconhecido";
+        }
+    }
 };
 
-struct Config
-{
-    std::string scheduling_algorithm;
-    int cpu_fraction;
-    std::string memory_policy;
-    int memory_size;
-    int page_size;
-    double allocation_percentage;
+/**
+ * @class LotteryScheduler
+ * @brief Implementa o escalonador por Sorteio com gerenciamento de E/S.
+ *
+ * Esta classe é o coração do simulador. Ela gerencia:
+ * - A fila de processos prontos para execução
+ * - A seleção de processos via algoritmo de sorteio
+ * - O controle de quantum de tempo para cada processo
+ * - O gerenciamento de dispositivos de E/S
+ * - As filas de espera para dispositivos ocupados
+ * - A simulação temporal da execução
+ */
+class LotteryScheduler {
+public:
+    // =====================================================================================
+    // MÉTODOS PÚBLICOS - INTERFACE PRINCIPAL
+    // =====================================================================================
+    
+    LotteryScheduler();
+    void set_quantum(int q);
+    void add_process(Process* process);
+    void add_device(const DeviceInfo& device);
+    void run();
+
+private:
+    // =====================================================================================
+    // MÉTODOS PRIVADOS - LÓGICA INTERNA DO ESCALONADOR
+    // =====================================================================================
+    
+    void update_process_states();     // Atualiza métricas de tempo dos processos
+    void check_for_arrivals();        // Verifica chegada de novos processos
+    void check_for_io_completions();  // Verifica conclusão de operações E/S
+    void service_device_queues();     // Move processos das filas de espera
+    void handle_running_process();    // Gerencia execução do processo atual
+    void dispatch_new_process();      // Seleciona novo processo para CPU
+
+    void print_system_state();        // Imprime estado atual do sistema
+    void print_final_report();        // Imprime relatório final
+    
+    Process* select_winner();         // Seleciona processo via sorteio
+
+    // =====================================================================================
+    // ATRIBUTOS PRIVADOS - ESTRUTURAS DE DADOS INTERNAS
+    // =====================================================================================
+    
+    std::vector<Process*> all_processes;     // Todos os processos do sistema
+    std::list<Process*> future_queue;        // Processos que ainda não chegaram
+    std::list<Process*> ready_queue;         // Fila de processos prontos
+    std::vector<Process*> finished_processes; // Processos finalizados
+    Process* running_process;                // Processo atualmente na CPU
+    
+    std::vector<DeviceInfo> devices;         // Todos os dispositivos de E/S
+    
+    int quantum;        // Quantum de tempo da CPU
+    int quantum_timer;  // Contador do quantum atual
+    int current_time;   // Tempo atual da simulação
 };
 
-bool read_file(const std::string &filename, Config &config, std::vector<ProcessInfo> &processes)
-{
+LotteryScheduler::LotteryScheduler() : quantum(0), quantum_timer(0), current_time(0) {}
+
+void LotteryScheduler::set_quantum(int q) { quantum = q; }
+void LotteryScheduler::add_process(Process* process) {
+    all_processes.push_back(process);
+    future_queue.push_back(process);
+    // Ordena a lista de futuros processos por tempo de chegada
+    future_queue.sort([](const Process* a, const Process* b) {
+        return a->creation_time < b->creation_time;
+    });
+}
+void LotteryScheduler::add_device(const DeviceInfo& device) { devices.push_back(device); }
+
+/**
+ * @brief Seleciona o processo vencedor baseado no número de bilhetes.
+ * 
+ * ALGORITMO DE SORTEIO:
+ * - Cada processo possui um número de "bilhetes" (tickets)
+ * - Sorteia-se um número aleatório entre 0 e total_de_bilhetes-1
+ * - O processo que "ganha" é aquele cuja soma acumulada de bilhetes
+ *   inclui o número sorteado
+ * - Processos com mais bilhetes têm maior probabilidade de serem escolhidos
+ * 
+ * @return Ponteiro para o processo vencedor ou nullptr se a fila de prontos estiver vazia.
+ */
+Process* LotteryScheduler::select_winner() {
+    if (ready_queue.empty()) {
+        return nullptr;
+    }
+
+    int total_tickets = 0;
+    for (const auto& process : ready_queue) {
+        total_tickets += process->tickets;
+    }
+
+    if (total_tickets == 0) return ready_queue.front(); // Caso nenhum processo tenha bilhetes
+
+    int winning_ticket = std::rand() % total_tickets;
+    int current_ticket_sum = 0;
+    for (auto& process : ready_queue) {
+        current_ticket_sum += process->tickets;
+        if (winning_ticket < current_ticket_sum) {
+            return process;
+        }
+    }
+    return nullptr; // Não deve acontecer se houver bilhetes
+}
+
+/**
+ * @brief Imprime o estado atual de todas as filas e dispositivos.
+ * 
+ * ESTADO DO SISTEMA MOSTRADO:
+ * - Tempo atual da simulação
+ * - Processo em execução (PID e tempo restante de CPU)
+ * - Fila de processos prontos (PID e tempo restante)
+ * - Processos bloqueados (PID e dispositivo que estão usando/aguardando)
+ * - Estado de cada dispositivo (uso atual, fila de espera, processos ativos)
+ * 
+ * Esta função é chamada sempre que há uma troca de contexto na CPU.
+ */
+void LotteryScheduler::print_system_state() {
+    std::cout << "\n--- Tempo: " << current_time << " ---\n";
+
+    if (running_process) {
+        std::cout << "Executando: PID " << running_process->pid 
+                  << " (CPU restante: " << running_process->remaining_time << ")\n";
+    } else {
+        std::cout << "Executando: Nenhum\n";
+    }
+
+    std::cout << "Prontos    : ";
+    if (ready_queue.empty()) {
+        std::cout << "Nenhum";
+    } else {
+        for (const auto& p : ready_queue) {
+            std::cout << "P" << p->pid << "(" << p->remaining_time << ") ";
+        }
+    }
+    std::cout << "\n";
+
+    std::cout << "Bloqueados : ";
+    bool any_blocked = false;
+    for (const auto& dev : devices) {
+        for (const auto& p : dev.usuarios_ativos) {
+            std::cout << "P" << p->pid << "(D" << dev.id << ") ";
+            any_blocked = true;
+        }
+        for (const auto& p : dev.fila_de_espera) {
+            std::cout << "P" << p->pid << "(D" << dev.id << ") ";
+            any_blocked = true;
+        }
+    }
+    if (!any_blocked) {
+        std::cout << "Nenhum";
+    }
+    std::cout << "\n\n";
+
+    for (const auto& dev : devices) {
+        std::cout << "Dispositivo " << dev.id << " (Uso: " << dev.usuarios_ativos.size() << "/" << dev.numUsosSimultaneos
+                  << ", Fila: " << dev.fila_de_espera.size() << ")\n";
+        std::cout << "  - Utilizando: ";
+        if(dev.usuarios_ativos.empty()) std::cout << "Nenhum";
+        else for(const auto& p : dev.usuarios_ativos) std::cout << "P" << p->pid << " ";
+        std::cout << "\n";
+        
+        std::cout << "  - Esperando : ";
+        if(dev.fila_de_espera.empty()) std::cout << "Nenhum";
+        else for(const auto& p : dev.fila_de_espera) std::cout << "P" << p->pid << " ";
+        std::cout << "\n";
+    }
+    std::cout << "----------------------------------------\n";
+}
+
+/**
+ * @brief Verifica a chegada de novos processos no tempo atual.
+ */
+void LotteryScheduler::check_for_arrivals() {
+    auto it = future_queue.begin();
+    while (it != future_queue.end()) {
+        if ((*it)->creation_time <= current_time) {
+            (*it)->state = PRONTO;
+            ready_queue.push_back(*it);
+            it = future_queue.erase(it);
+        } else {
+            // Como a lista está ordenada, podemos parar na primeira falha.
+            break;
+        }
+    }
+}
+
+/**
+ * @brief Verifica se alguma operação de E/S foi concluída.
+ * 
+ * FUNCIONAMENTO:
+ * - Percorre todos os dispositivos
+ * - Para cada processo usando um dispositivo, verifica se o tempo de conclusão chegou
+ * - Processos concluídos são movidos para a fila de prontos
+ * - Dispositivos ficam livres para novos processos
+ */
+void LotteryScheduler::check_for_io_completions() {
+    for (auto& dev : devices) {
+        auto it = dev.usuarios_ativos.begin();
+        while (it != dev.usuarios_ativos.end()) {
+            Process* p = *it;
+            if (p->io_completion_time <= current_time) {
+                p->state = PRONTO;
+                p->device_id_blocked = -1;
+                ready_queue.push_back(p);
+                it = dev.usuarios_ativos.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+}
+
+/**
+ * @brief Move processos da fila de espera para a de uso do dispositivo, se houver espaço.
+ * 
+ * GERENCIAMENTO DE FILAS DE E/S:
+ * - Cada dispositivo tem um limite de processos simultâneos (numUsosSimultaneos)
+ * - Processos aguardam na fila_de_espera até haver vaga
+ * - Quando há vaga, o primeiro da fila é movido para usuarios_ativos
+ * - Define o tempo de conclusão da operação de E/S
+ */
+void LotteryScheduler::service_device_queues() {
+    for (auto& dev : devices) {
+        while (dev.usuarios_ativos.size() < (size_t)dev.numUsosSimultaneos && !dev.fila_de_espera.empty()) {
+            Process* p = dev.fila_de_espera.front();
+            dev.fila_de_espera.pop_front();
+
+            p->io_completion_time = current_time + dev.tempoOperacao;
+            dev.usuarios_ativos.push_back(p);
+        }
+    }
+}
+
+/**
+ * @brief Gerencia a execução do processo na CPU.
+ */
+void LotteryScheduler::handle_running_process() {
+    if (!running_process) return;
+
+    // 1. Decrementa tempos
+    running_process->remaining_time--;
+    quantum_timer--;
+
+    // 2. Verifica se o processo terminou
+    if (running_process->remaining_time <= 0) {
+        running_process->state = TERMINADO;
+        running_process->end_time = current_time + 1;
+        finished_processes.push_back(running_process);
+        std::cout << ">>> Processo " << running_process->pid << " finalizado no tempo " << running_process->end_time << " <<<\n";
+        running_process = nullptr;
+        return;
+    }
+
+    // 3. Verifica se o quantum acabou
+    if (quantum_timer <= 0) {
+        running_process->state = PRONTO;
+        ready_queue.push_back(running_process);
+        running_process = nullptr;
+        return;
+    }
+}
+
+/**
+ * @brief Seleciona um novo processo para executar se a CPU estiver ociosa.
+ * 
+ * TROCA DE CONTEXTO E SOLICITAÇÃO DE E/S:
+ * 1. Seleciona processo da fila de prontos usando algoritmo de sorteio
+ * 2. Imprime estado do sistema (troca de contexto)
+ * 3. Verifica probabilisticamente se o processo solicita E/S
+ * 4. Se solicita E/S:
+ *    - Escolhe dispositivo aleatoriamente
+ *    - Consome 1 unidade de CPU
+ *    - Bloqueia o processo no dispositivo
+ *    - Se dispositivo ocupado, vai para fila de espera
+ *    - Se dispositivo livre, inicia operação imediatamente
+ */
+void LotteryScheduler::dispatch_new_process() {
+    if (running_process) return; // CPU já está ocupada
+
+    if (!ready_queue.empty()) {
+        Process* winner = select_winner();
+        
+        // Remove o vencedor da fila de prontos
+        ready_queue.remove(winner);
+        
+        running_process = winner;
+        running_process->state = EXECUTANDO;
+        if (running_process->start_time == -1) {
+            running_process->start_time = current_time;
+        }
+        
+        quantum_timer = quantum;
+
+        // Imprime estado na troca de contexto
+        print_system_state();
+
+        // Verifica se o processo vai requisitar E/S neste ciclo
+        double chance = static_cast<double>(rand()) / RAND_MAX;
+        if (chance < running_process->chanceRequisitarES) {
+            int device_idx = rand() % devices.size();
+            
+            // Simula que a requisição ocorre em algum momento dentro do quantum
+            // Para simplificar, vamos assumir que ele usa 1 unidade de tempo de CPU e depois bloqueia.
+            // (A lógica de "em qual momento da fatia" pode ser complexa, esta é uma abordagem comum)
+            
+            running_process->remaining_time--; // Consome 1 de CPU
+            if(running_process->remaining_time <= 0) { // Se terminar com isso, não bloqueia
+                running_process->state = TERMINADO;
+                running_process->end_time = current_time + 1;
+                finished_processes.push_back(running_process);
+                 std::cout << ">>> Processo " << running_process->pid << " finalizado no tempo " << running_process->end_time << " <<<\n";
+                running_process = nullptr;
+                return;
+            }
+
+            std::cout << "!!! Processo " << running_process->pid << " solicitou E/S para o dispositivo " << device_idx << " !!!\n";
+
+            running_process->state = BLOQUEADO;
+            running_process->device_id_blocked = device_idx;
+            
+            DeviceInfo& dev = devices[device_idx];
+            if (dev.usuarios_ativos.size() < (size_t)dev.numUsosSimultaneos) {
+                running_process->io_completion_time = current_time + 1 + dev.tempoOperacao;
+                dev.usuarios_ativos.push_back(running_process);
+            } else {
+                dev.fila_de_espera.push_back(running_process);
+            }
+            
+            running_process = nullptr; // Libera a CPU
+        }
+    }
+}
+
+/**
+ * @brief Atualiza as métricas de tempo de espera dos processos.
+ */
+void LotteryScheduler::update_process_states() {
+    for (auto* p : all_processes) {
+        if (p->state == PRONTO) {
+            p->time_in_ready++;
+        } else if (p->state == BLOQUEADO) {
+            p->time_in_blocked++;
+        }
+    }
+}
+
+/**
+ * @brief O laço principal da simulação.
+ * 
+ * CICLO PRINCIPAL DA SIMULAÇÃO:
+ * 1. Verifica chegada de novos processos
+ * 2. Verifica conclusão de operações de E/S
+ * 3. Move processos das filas de espera para dispositivos livres
+ * 4. Se CPU ociosa, despacha novo processo
+ * 5. Processa execução do processo atual (decrementa tempo, verifica término)
+ * 6. Atualiza métricas de tempo dos processos
+ * 7. Avança o tempo da simulação
+ * 
+ * Repete até todos os processos terminarem.
+ */
+void LotteryScheduler::run() {
+    std::srand(time(0));
+    std::cout << "--- Simulacao do Escalonador Sorteio com E/S ---\n\n";
+
+    while (finished_processes.size() < all_processes.size()) {
+        // A ordem das verificações é importante!
+        check_for_arrivals();
+        check_for_io_completions();
+        service_device_queues();
+
+        // Se a CPU está ociosa, tenta despachar um novo processo
+        if (!running_process) {
+            dispatch_new_process();
+        }
+
+        // Se a CPU continua ocupada, processa o ciclo atual
+        handle_running_process();
+
+        // Atualiza métricas de tempo de espera
+        update_process_states();
+
+        // Avança o tempo
+        current_time++;
+
+        if (current_time > 10000) { // Safety break
+            std::cerr << "Simulacao excedeu o tempo limite!" << std::endl;
+            break;
+        }
+    }
+
+    std::cout << "\n--- Simulacao do Escalonador finalizada no tempo " << current_time << " ---\n\n";
+    print_final_report();
+}
+
+/**
+ * @brief Imprime o relatório final de desempenho.
+ */
+void LotteryScheduler::print_final_report() {
+    std::cout << "\n\n========================= Relatorio Final ========================\n";
+    std::cout << std::left << std::setw(6) << "PID"
+              << std::setw(18) << "| Tempo de Retorno"
+              << std::setw(15) << "| Tempo de CPU"
+              << std::setw(18) << "| Tempo em Pronto"
+              << std::setw(18) << "| Tempo Bloqueado" << "\n";
+    std::cout << "------------------------------------------------------------------\n";
+
+    // Ordena os processos finalizados por PID para um relatório limpo
+    std::sort(finished_processes.begin(), finished_processes.end(), [](const Process* a, const Process* b) {
+        return a->pid < b->pid;
+    });
+
+    for (const auto& p : finished_processes) {
+        int turnaround_time = p->end_time - p->creation_time;
+        std::cout << std::left << std::setw(6) << p->pid
+                  << "| " << std::setw(16) << turnaround_time
+                  << "| " << std::setw(13) << p->burst_time
+                  << "| " << std::setw(16) << p->time_in_ready
+                  << "| " << std::setw(16) << p->time_in_blocked
+                  << "\n";
+    }
+    std::cout << "==================================================================\n";
+}
+
+
+/**
+ * @brief Lê o arquivo de entrada e popula as estruturas de dados.
+ * 
+ * FORMATO DO ARQUIVO DE ENTRADA:
+ * Linha 1: algoritmo|quantum|politica_memoria|tamanho_memoria|tamanho_pagina|percentual|num_dispositivos
+ * Próximas N linhas: dispositivo_id|usos_simultaneos|tempo_operacao
+ * Demais linhas: tempo_criacao|pid|tempo_execucao|bilhetes|memoria|sequencia_paginas|chance_es
+ * 
+ * PROCESSO DE LEITURA:
+ * 1. Lê linha de configuração geral
+ * 2. Lê informações de cada dispositivo de E/S
+ * 3. Lê informações de cada processo
+ * 4. Cria objetos Process e DeviceInfo
+ * 5. Adiciona tudo ao escalonador
+ * 
+ * @return True se a leitura for bem-sucedida, false caso contrário.
+ */
+bool read_file(const std::string& filename, Config& config, LotteryScheduler& scheduler) {
     std::ifstream file(filename);
-    if (!file.is_open())
-    {
+    if (!file.is_open()) {
         std::cerr << "Erro ao abrir o arquivo: " << filename << std::endl;
         return false;
     }
 
     std::string line;
-    bool first_line = true;
 
-    while (std::getline(file, line))
-    {
-        if (line.empty())
-            continue;
+    // 1. Ler a linha de configuração
+    if (!std::getline(file, line)) return false;
+    std::stringstream ss_config(line);
+    std::string token;
+    
+    std::getline(ss_config, config.scheduling_algorithm, '|');
+    std::getline(ss_config, token, '|'); config.cpu_fraction = std::stoi(token);
+    std::getline(ss_config, token, '|'); // políticaMemória (ignorado)
+    std::getline(ss_config, token, '|'); // tamanhoMemória (ignorado)
+    std::getline(ss_config, token, '|'); // tamanhoPáginasMolduras (ignorado)
+    std::getline(ss_config, token, '|'); // percentualAlocação (ignorado)
+    std::getline(ss_config, token, '|'); config.numDispositivosES = std::stoi(token);
 
-        if (first_line)
-        {
-            std::stringstream ss(line);
-            std::string token;
-            std::getline(ss, config.scheduling_algorithm, '|');
-            std::getline(ss, token, '|');
-            config.cpu_fraction = std::stoi(token);
-            std::getline(ss, config.memory_policy, '|');
-            std::getline(ss, token, '|');
-            config.memory_size = std::stoi(token);
-            std::getline(ss, token, '|');
-            config.page_size = std::stoi(token);
-            std::getline(ss, token);
-            config.allocation_percentage = std::stod(token);
-            first_line = false;
+    // 2. Ler as linhas dos dispositivos de E/S
+    for (int i = 0; i < config.numDispositivosES; ++i) {
+        if (!std::getline(file, line)) return false;
+        std::stringstream ss_device(line);
+        DeviceInfo dev;
+        std::getline(ss_device, token, '|'); 
+        // Extrair o número após "device-"
+        size_t dash_pos = token.find('-');
+        if (dash_pos != std::string::npos) {
+            token = token.substr(dash_pos + 1);
         }
-        else
-        {
-            ProcessInfo process;
-            std::stringstream ss(line);
-            std::string token;
-            std::getline(ss, token, '|');
-            process.creation_time = std::stoi(token);
-            std::getline(ss, token, '|');
-            process.pid = std::stoi(token);
-            std::getline(ss, token, '|');
-            process.execution_time = std::stoi(token);
-            std::getline(ss, token, '|');
-            process.priority = std::stoi(token);
-            std::getline(ss, token, '|');
-            process.memory_needed = std::stoi(token);
-            if (std::getline(ss, token))
-            {
-                std::stringstream pages_ss(token);
-                std::string page_str;
-                while (pages_ss >> page_str)
-                {
-                    process.page_sequence.push_back(std::stoi(page_str));
-                }
-            }
-            processes.push_back(process);
-        }
+        dev.id = std::stoi(token);
+        std::getline(ss_device, token, '|'); dev.numUsosSimultaneos = std::stoi(token);
+        std::getline(ss_device, token, '|'); dev.tempoOperacao = std::stoi(token);
+        scheduler.add_device(dev);
     }
+
+    // 3. Ler as linhas dos processos
+    int current_pid = 0;
+    while (std::getline(file, line)) {
+        if (line.empty()) continue;
+        std::stringstream ss_process(line);
+        
+        int creation_time, pid_arquivo, execution_time, priority, memory;
+        double chance_es;
+        
+        std::getline(ss_process, token, '|'); creation_time = std::stoi(token);
+        std::getline(ss_process, token, '|'); pid_arquivo = std::stoi(token);
+        std::getline(ss_process, token, '|'); execution_time = std::stoi(token);
+        std::getline(ss_process, token, '|'); priority = std::stoi(token); // bilhetes
+        std::getline(ss_process, token, '|'); memory = std::stoi(token); // qtdeMemoria (ignorado)
+        std::getline(ss_process, token, '|'); // sequenciaAcessoPaginas (ignorado)
+        std::getline(ss_process, token, '|'); chance_es = std::stod(token);
+        
+        scheduler.add_process(new Process(pid_arquivo, creation_time, execution_time, priority, chance_es));
+        current_pid++;
+    }
+
     file.close();
     return true;
 }
 
-// --- CLASSE FIFO (First-In, First-Out) ---
-class FIFO
-{
-protected:
-    int num_frames;
-    std::vector<int> frames;
-    std::vector<int> arrival_queue;
-    int page_replacements;
 
-public:
-    FIFO(int n_frames) : num_frames(n_frames), page_replacements(0) {}
-    int get_page_replacements() const { return page_replacements; }
-
-protected:
-    bool is_page_in_memory(int page) const
-    {
-        for (size_t i = 0; i < frames.size(); ++i)
-        {
-            if (frames[i] == page)
-                return true;
-        }
-        return false;
-    }
-
-    void replace_page(int page)
-    {
-        int victim_page = arrival_queue[0];
-
-        for (size_t i = 0; i < arrival_queue.size() - 1; ++i)
-        {
-            arrival_queue[i] = arrival_queue[i + 1];
-        }
-        arrival_queue.pop_back();
-
-        for (size_t i = 0; i < frames.size(); ++i)
-        {
-            if (frames[i] == victim_page)
-            {
-                frames.erase(frames.begin() + i);
+int main(int argc, char* argv[]) {
+    // =====================================================================================
+    // INICIALIZAÇÃO DO SIMULADOR
+    // =====================================================================================
+    
+    std::string filename;
+    
+    // Determina o arquivo de entrada (padrão: entrada_ES.txt ou argumento da linha de comando)
+    if (argc >= 2) {
+        filename = argv[1];
+    } else {
+        // Tenta múltiplas possibilidades para encontrar entrada_ES.txt
+        std::string possible_paths[] = {
+            "entrada_ES.txt",                    // Mesmo diretório
+            "../entrada_ES.txt",                 // Diretório pai
+            "./entrada_ES.txt",                  // Mesmo diretório com ./
+        };
+        
+        filename = "";
+        for (const auto& path : possible_paths) {
+            std::ifstream test_file(path);
+            if (test_file.is_open()) {
+                filename = path;
+                test_file.close();
                 break;
             }
         }
-
-        frames.push_back(page);
-        arrival_queue.push_back(page);
-        page_replacements++;
-    }
-
-public:
-    void execute(const std::vector<int> &access_sequence)
-    {
-        for (int page : access_sequence)
-        {
-            if (!is_page_in_memory(page))
-            {
-                if (frames.size() >= (size_t)num_frames)
-                {
-                    replace_page(page);
-                }
-                else
-                {
-                    frames.push_back(page);
-                    arrival_queue.push_back(page);
-                }
-            }
+        
+        if (filename.empty()) {
+            std::cerr << "Erro: Não foi possível encontrar o arquivo entrada_ES.txt" << std::endl;
+            std::cerr << "Certifique-se de que o arquivo está no mesmo diretório do executável." << std::endl;
+            return 1;
         }
     }
-};
 
-
-
-// Escalonador de Loteria
-
-class LotteryScheduler;
-
-class Process
-{
-public:
-    Process(int pid, int creation_time, int burst_time, int tickets = 0);
-    int get_pid() const;
-
-private:
-    int pid;
-    int creation_time;
-    int burst_time;
-    int remaining_time;
-    int start_time;
-    int end_time;
-    bool is_finished;
-    int tickets;
-    friend class LotteryScheduler;
-};
-
-Process::Process(int pid, int creation_time, int burst_time, int tickets)
-{
-    this->pid = pid;
-    this->creation_time = creation_time;
-    this->burst_time = burst_time;
-    this->remaining_time = burst_time;
-    this->start_time = -1;
-    this->end_time = -1;
-    this->tickets = tickets;
-    this->is_finished = false;
-}
-int Process::get_pid() const { return pid; }
-
-class LotteryScheduler
-{
-public:
-    LotteryScheduler();
-    void set_quantum(int q);
-    void add_process(const Process &process);
-    void run();
-
-private:
-    void update_ready_queue();
-    Process *select_winner();
-    std::vector<Process> processes;
-    std::vector<Process *> ready_queue;
-    int quantum;
-    int current_time;
-};
-
-LotteryScheduler::LotteryScheduler()
-{
-    quantum = 0;
-    current_time = 0;
-}
-
-void LotteryScheduler::set_quantum(int q) { quantum = q; }
-void LotteryScheduler::add_process(const Process &process) { processes.push_back(process); }
-
-void LotteryScheduler::update_ready_queue()
-{
-    for (auto &process : processes)
-    {
-        bool in_ready_queue = false;
-        for (const auto &ready_process : ready_queue)
-        {
-            if (ready_process->get_pid() == process.get_pid())
-            {
-                in_ready_queue = true;
-                break;
-            }
-        }
-        if (!process.is_finished && !in_ready_queue && process.creation_time <= current_time)
-        {
-            ready_queue.push_back(&process);
-        }
-    }
-}
-
-Process *LotteryScheduler::select_winner()
-{
-    int total_tickets = 0;
-    for (const auto &process : ready_queue)
-    {
-        total_tickets += process->tickets;
-    }
-    if (total_tickets == 0)
-        return nullptr;
-
-    int winning_ticket = std::rand() % total_tickets;
-    int current_ticket_sum = 0;
-    for (auto &process : ready_queue)
-    {
-        current_ticket_sum += process->tickets;
-        if (winning_ticket < current_ticket_sum)
-        {
-            return process;
-        }
-    }
-    return nullptr;
-}
-
-void LotteryScheduler::run()
-{
-    std::srand(time(0));
-    std::cout << "--- Simulacao do Escalonador Loteria ---\n\n";
-
-    while (true)
-    {
-        update_ready_queue();
-        bool all_finished = true;
-        for (const auto &process : processes)
-        {
-            if (!process.is_finished)
-            {
-                all_finished = false;
-                break;
-            }
-        }
-        if (all_finished)
-        {
-            std::cout << "\n--- Simulacao do Escalonador finalizada no tempo " << current_time << " ---\n\n";
-            break;
-        }
-        if (ready_queue.empty())
-        {
-            current_time++;
-            continue;
-        }
-        Process *winner = select_winner();
-        if (winner == nullptr)
-        {
-            current_time++;
-            continue;
-        }
-        if (winner->start_time == -1)
-        {
-            winner->start_time = current_time;
-        }
-        int time_to_run = std::min(winner->remaining_time, quantum);
-        std::cout << "Tempo[" << std::setw(3) << current_time << " -> " << std::setw(3) << current_time + time_to_run << "]: "
-                  << "Processo " << winner->get_pid() << " esta na CPU. (Restante: "
-                  << winner->remaining_time - time_to_run << ")" << std::endl;
-        current_time += time_to_run;
-        winner->remaining_time -= time_to_run;
-        if (winner->remaining_time <= 0)
-        {
-            winner->is_finished = true;
-            winner->end_time = current_time;
-            std::cout << ">>> Processo " << winner->get_pid() << " finalizado no tempo " << current_time << " <<<" << std::endl;
-            for (size_t i = 0; i < ready_queue.size(); ++i)
-            {
-                if (ready_queue[i]->get_pid() == winner->get_pid())
-                {
-                    ready_queue.erase(ready_queue.begin() + i);
-                    break;
-                }
-            }
-        }
-    }
-}
-
-int main(int argc, char *argv[])
-{
-    if (argc < 2)
-    {
-        std::cerr << "Uso: " << argv[0] << " <arquivo_de_entrada>" << std::endl;
-        return 1;
-    }
-    std::string filename = argv[1];
-
+    // =====================================================================================
+    // CARREGAMENTO DOS DADOS
+    // =====================================================================================
+    
     Config config;
-    std::vector<ProcessInfo> processes;
+    LotteryScheduler scheduler;
 
-    if (!read_file(filename, config, processes))
-    {
+    // Lê arquivo de entrada e configura o simulador
+    if (!read_file(filename, config, scheduler)) {
         return 1;
     }
 
-    std::string algorithm_name_lower = config.scheduling_algorithm;
-    for (size_t i = 0; i < algorithm_name_lower.length(); ++i)
-    {
-        algorithm_name_lower[i] = tolower(algorithm_name_lower[i]);
-    }
-
-    if (algorithm_name_lower == "loteria")
-    {
-        LotteryScheduler scheduler;
-        scheduler.set_quantum(config.cpu_fraction);
-        for (size_t i = 0; i < processes.size(); ++i)
-        {
-            Process p(processes[i].pid, processes[i].creation_time, processes[i].execution_time, processes[i].priority);
-            scheduler.add_process(p);
-        }
-        scheduler.run();
-    }
-
-    std::string memory_policy_lower = config.memory_policy;
-    for (char &c : memory_policy_lower)
-        c = tolower(c);
-    bool is_local = (memory_policy_lower == "local");
-
-    int total_fifo_replacements = 0;
-    int total_mru_replacements = 0;
-    int total_nuf_replacements = 0;
-    int total_optimal_replacements = 0;
-
-    std::cout << "--- Simulacao de Gerenciamento de Memoria ---\n";
-
-    if (is_local) // Política é LOCAL
-    {
-        for (size_t i = 0; i < processes.size(); ++i)
-        {
-            const ProcessInfo &process = processes[i];
-            if (process.page_sequence.empty() || config.page_size == 0)
-                continue;
-
-            int process_virtual_pages = (int)ceil((double)process.memory_needed / config.page_size);
-            int num_frames = floor(process_virtual_pages * (config.allocation_percentage / 100.0));
-            if (num_frames == 0)
-                num_frames = 1;
-
-            std::cout << "\n--- Processo PID: " << process.pid << " (com " << num_frames << " quadros) ---\n";
-
-            FIFO fifo(num_frames);
-            fifo.execute(process.page_sequence);
-            int fifo_reps = fifo.get_page_replacements();
-            total_fifo_replacements += fifo_reps;
-            std::cout << "-> FIFO: " << fifo_reps << " trocas de pagina.\n";
-
-            MRU mru(num_frames);
-            mru.execute(process.page_sequence);
-            int mru_reps = mru.get_page_replacements();
-            total_mru_replacements += mru_reps;
-            std::cout << "-> MRU: " << mru_reps << " trocas de pagina.\n";
-
-            NUF nuf(num_frames);
-            nuf.execute(process.page_sequence);
-            int nuf_reps = nuf.get_page_replacements();
-            total_nuf_replacements += nuf_reps;
-            std::cout << "-> NUF: " << nuf_reps << " trocas de pagina.\n";
-
-            Otimo optimal(num_frames);
-            optimal.execute(process.page_sequence);
-            int opt_reps = optimal.get_page_replacements();
-            total_optimal_replacements += opt_reps;
-            std::cout << "-> Otimo: " << opt_reps << " trocas de pagina.\n";
-        }
-    }
-    else // Política é GLOBAL
-    {
-        std::vector<int> combined_sequence;
-        for (const auto &proc : processes)
-        {
-            for (int page : proc.page_sequence)
-            {
-                combined_sequence.push_back(proc.pid * 10000 + page);
-            }
-        }
-
-        int total_frames = config.memory_size / config.page_size;
-        if (total_frames == 0)
-            total_frames = 1;
-
-        std::cout << "\n--- Politica GLOBAL com " << total_frames << " molduras totais ---\n";
-
-        FIFO fifo(total_frames);
-        fifo.execute(combined_sequence);
-        total_fifo_replacements = fifo.get_page_replacements();
-        std::cout << "-> FIFO: " << total_fifo_replacements << " trocas de pagina.\n";
-
-        MRU mru(total_frames);
-        mru.execute(combined_sequence);
-        total_mru_replacements = mru.get_page_replacements();
-        std::cout << "-> MRU: " << total_mru_replacements << " trocas de pagina.\n";
-
-        NUF nuf(total_frames);
-        nuf.execute(combined_sequence);
-        total_nuf_replacements = nuf.get_page_replacements();
-        std::cout << "-> NUF: " << total_nuf_replacements << " trocas de pagina.\n";
-
-        Otimo optimal(total_frames);
-        optimal.execute(combined_sequence);
-        total_optimal_replacements = optimal.get_page_replacements();
-        std::cout << "-> Otimo: " << total_optimal_replacements << " trocas de pagina.\n";
-    }
-
-    std::string best_algorithm = "empate";
-    int min_diff = std::numeric_limits<int>::max();
-    bool tie = false;
-
-    int diff_fifo = abs(total_fifo_replacements - total_optimal_replacements);
-    if (diff_fifo < min_diff)
-    {
-        min_diff = diff_fifo;
-        best_algorithm = "FIFO";
-        tie = false;
-    }
-
-    int diff_mru = abs(total_mru_replacements - total_optimal_replacements);
-    if (diff_mru < min_diff)
-    {
-        min_diff = diff_mru;
-        best_algorithm = "MRU (Menos Recentemente Usada)";
-        tie = false;
-    }
-    else if (diff_mru == min_diff)
-    {
-        tie = true;
-    }
-
-    int diff_nuf = abs(total_nuf_replacements - total_optimal_replacements);
-    if (diff_nuf < min_diff)
-    {
-        min_diff = diff_nuf;
-        best_algorithm = "NUF (Não Usada Frequentemente)";
-        tie = false;
-    }
-    else if (diff_nuf == min_diff)
-    {
-        tie = true;
-    }
-
-    if (tie)
-        best_algorithm = "empate";
-
-    std::cout << "\n\n=======================================================";
-    std::cout << "\n--- Resultado Final do Gerenciamento de Memoria ---\n";
-    std::cout << "=======================================================\n";
-    std::cout << total_fifo_replacements << "|"
-              << total_mru_replacements << "|"
-              << total_nuf_replacements << "|"
-              << total_optimal_replacements << "|"
-              << best_algorithm << std::endl;
-    std::cout << "=======================================================\n";
+    // =====================================================================================
+    // EXECUÇÃO DA SIMULAÇÃO
+    // =====================================================================================
+    
+    // Configura o quantum e inicia a simulação
+    scheduler.set_quantum(config.cpu_fraction);
+    scheduler.run();
+    
+    // =====================================================================================
+    // FINALIZAÇÃO
+    // =====================================================================================
+    
+    // Limpeza da memória alocada para os processos
+    // (Em um programa real, a responsabilidade da memória deveria ser mais bem definida,
+    // talvez com std::unique_ptr ou um gerenciador de recursos)
 
     return 0;
 }
