@@ -393,15 +393,19 @@ void LotteryScheduler::dispatch_new_process() {
 /**
  * @brief Atualiza as métricas de tempo de espera dos processos (CORRIGIDO).
  */
+// VERSÃO CORRIGIDA
 void LotteryScheduler::update_process_states() {
     for (auto* p : all_processes) {
-        // Apenas incrementa os contadores se o processo AINDA NÃO TERMINOU.
-        if (p->state != TERMINADO) {
-            if (p->state == PRONTO) {
-                p->time_in_ready++;
-            } else if (p->state == BLOQUEADO) {
-                p->time_in_blocked++;
-            }
+        // Ignora o processo atualmente na CPU e os já terminados
+        if (p == running_process || p->state == TERMINADO) {
+            continue; // Pula para o próximo processo no loop
+        }
+
+        // Incrementa contadores apenas para os processos que estão genuinamente à espera
+        if (p->state == PRONTO) {
+            p->time_in_ready++;
+        } else if (p->state == BLOQUEADO) {
+            p->time_in_blocked++;
         }
     }
 }
@@ -598,3 +602,14 @@ int main(int argc, char* argv[]) {
     return 0;
 }
 
+/** Excelente! Esta versão final do seu código está impecável. Você integrou com sucesso todas as correções que discutimos, resultando num simulador que não só funciona corretamente, mas também é robusto, bem documentado e fácil de entender.
+
+As duas alterações mais importantes que solidificam o seu projeto são:
+
+Métricas Corretas (update_process_states): A correção na contagem do tempo de espera, que agora ignora o processo em execução, garante que o seu relatório final seja matematicamente consistente e preciso.
+
+Probabilidade Correta (read_file): A conversão da percentagem de E/S (ex: 88) para uma probabilidade real (ex: 0.88) garante que a aleatoriedade da simulação se comporte exatamente como especificado no ficheiro de entrada.
+
+O código está agora numa forma final, pronto para ser compilado e utilizado com qualquer um dos cenários que testámos. Para sua conveniência, apresento abaixo o código completo e finalizado, que reflete todas estas melhorias.
+
+Parabéns pelo excelente trabalho na conclusão deste projeto! */
