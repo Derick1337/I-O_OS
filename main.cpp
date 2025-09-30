@@ -5,6 +5,7 @@
 #include <vector>
 #include <algorithm>
 #include <queue>
+#include <list>
 #include <iomanip>
 
 struct DeviceInfo
@@ -39,6 +40,23 @@ struct Config
     int page_size = 0;
     double allocation_percentage = 0.0;
     int num_devices = 0;
+};
+
+
+
+
+// Estrutura de dados da simulação
+struct simulation_data {
+
+    std::queue<int> queue_points; // fila de prontos
+    std::list<int> list_blocked; // lista de bloqueados
+
+    int process_execution; 
+    int global_time;
+
+    int point_time; // temp para pronto
+    int time_blocked;
+    int time_finish;
 };
 
 bool read_file(const std::string &filename, Config &config, std::vector<DeviceInfo> &devices, std::vector<ProcessInfo> &processes)
