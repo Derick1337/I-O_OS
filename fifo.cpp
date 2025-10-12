@@ -66,3 +66,67 @@ public:
         }
     }
 };
+
+class memory
+{
+protected:
+    Config config;
+    std::vector<ProcessInfo> processes;
+    int total_fifo_replacements = 0;
+
+public:
+    void initialize(const Config &config_data, const std::vector<ProcessInfo> &process_data)
+    {
+        config = config_data;
+        processes = process_data;
+    }
+
+    void local_politic(bool local, bool global)
+    {
+        if (local)
+        {
+            for (size_t i = 0; i < processes.size(); i++)
+            {
+                const ProcessInfo &process = processes[i];
+                if (process.page_sequence.empty() || config.page_size == 0)
+                    continue;
+
+                int process_virtual_pages = (int)ceil((double)process.memory_needed / config.page_size);
+                int num_frames = floor(process_virtual_pages * (config.allocation_percentage / 100.0));
+                if (num_frames == 0)
+                    num_frames = 1;
+
+                std::cout << "\n--- Processo PID: " << process.pid << " (com " << num_frames << " quadros) ---\n";
+                FIFO fifo(num_frames);
+                fifo.execute(process.page_sequence);
+                int fifo_reps = fifo.get_page_replacements();
+                total_fifo_replacements += fifo_reps;
+                std::cout << "-> FIFO: " << fifo_reps << " trocas de pagina.\n";
+            }
+        }
+
+        if (global)
+        {
+            std::vector<int> combined_sequence;
+
+            for (const auto &proc : processes)
+            {
+                for (int page : proc.page_sequence)
+                {
+                    combined_sequence.push_back(proc.pid * 10000 + page);
+                }
+            }
+
+            int total_frames = config.memory_size / config.page_size;
+            if (total_frames == 0)
+                total_frames = 1;
+
+            std::cout << "\n--- Politica GLOBAL com " << total_frames << " molduras totais ---\n";
+
+            FIFO fifo(total_frames);
+            fifo.execute(combined_sequence);
+            total_fifo_replacements = fifo.get_page_replacements();
+            std::cout << "-> FIFO: " << total_fifo_replacements << " trocas de pagina.\n";
+        }
+    }
+};
